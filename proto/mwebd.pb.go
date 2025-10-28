@@ -838,7 +838,9 @@ type PsbtAddInputRequest struct {
 	// The output ID of the utxo.
 	OutputId string `protobuf:"bytes,3,opt,name=output_id,json=outputId,proto3" json:"output_id,omitempty"`
 	// The address index of the utxo.
-	AddressIndex  uint32 `protobuf:"varint,4,opt,name=address_index,json=addressIndex,proto3" json:"address_index,omitempty"`
+	AddressIndex uint32 `protobuf:"varint,4,opt,name=address_index,json=addressIndex,proto3" json:"address_index,omitempty"`
+	// The fee rate per KB in litoshis.
+	FeeRatePerKb  uint64 `protobuf:"varint,5,opt,name=fee_rate_per_kb,json=feeRatePerKb,proto3" json:"fee_rate_per_kb,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -897,6 +899,13 @@ func (x *PsbtAddInputRequest) GetOutputId() string {
 func (x *PsbtAddInputRequest) GetAddressIndex() uint32 {
 	if x != nil {
 		return x.AddressIndex
+	}
+	return 0
+}
+
+func (x *PsbtAddInputRequest) GetFeeRatePerKb() uint64 {
+	if x != nil {
+		return x.FeeRatePerKb
 	}
 	return 0
 }
@@ -1568,13 +1577,14 @@ const file_mwebd_proto_rawDesc = "" +
 	"\x05value\x18\x01 \x01(\x03R\x05value\x12\x1b\n" +
 	"\tpk_script\x18\x02 \x01(\fR\bpkScript\")\n" +
 	"\fPsbtResponse\x12\x19\n" +
-	"\bpsbt_b64\x18\x01 \x01(\tR\apsbtB64\"\x93\x01\n" +
+	"\bpsbt_b64\x18\x01 \x01(\tR\apsbtB64\"\xba\x01\n" +
 	"\x13PsbtAddInputRequest\x12\x19\n" +
 	"\bpsbt_b64\x18\x01 \x01(\tR\apsbtB64\x12\x1f\n" +
 	"\vscan_secret\x18\x02 \x01(\fR\n" +
 	"scanSecret\x12\x1b\n" +
 	"\toutput_id\x18\x03 \x01(\tR\boutputId\x12#\n" +
-	"\raddress_index\x18\x04 \x01(\rR\faddressIndex\"\x89\x01\n" +
+	"\raddress_index\x18\x04 \x01(\rR\faddressIndex\x12%\n" +
+	"\x0ffee_rate_per_kb\x18\x05 \x01(\x04R\ffeeRatePerKb\"\x89\x01\n" +
 	"\x17PsbtAddRecipientRequest\x12\x19\n" +
 	"\bpsbt_b64\x18\x01 \x01(\tR\apsbtB64\x12,\n" +
 	"\trecipient\x18\x02 \x01(\v2\x0e.PsbtRecipientR\trecipient\x12%\n" +

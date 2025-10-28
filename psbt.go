@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"math"
 	"strings"
 
 	"github.com/ltcmweb/ltcd/btcec/v2"
@@ -92,7 +91,7 @@ func (s *Server) PsbtAddInput(ctx context.Context,
 		MwebOutputPubkey:      &output.ReceiverPubKey,
 	})
 
-	s.addPeginIfNecessary(p)
+	s.adjustKernel(p, req.FeeRatePerKb)
 
 	b64, err := p.B64Encode()
 	if err != nil {
@@ -109,8 +108,7 @@ func (s *Server) getKernelIndex(p *psbt.Packet) (index int) {
 		index++
 	}
 	if index == len(p.Kernels) {
-		fee := ltcutil.Amount(mweb.KernelWithStealthWeight * mweb.BaseMwebFee)
-		pKernel := psbt.PKernel{Fee: &fee}
+		pKernel := psbt.PKernel{}
 		if p.FallbackLocktime != nil &&
 			*p.FallbackLocktime > 0 &&
 			*p.FallbackLocktime < 500_000_000 {
@@ -136,14 +134,12 @@ func (s *Server) PsbtAddRecipient(ctx context.Context,
 		return nil, err
 	}
 
-	var fee ltcutil.Amount
 	kernel := &p.Kernels[s.getKernelIndex(p)]
 	if mwebAddr, ok := addr.(*ltcutil.AddressMweb); ok {
 		p.Outputs = append(p.Outputs, psbt.POutput{
 			Amount:         ltcutil.Amount(req.Recipient.Value),
 			StealthAddress: mwebAddr.StealthAddress(),
 		})
-		fee = mweb.StandardOutputWeight * mweb.BaseMwebFee
 	} else {
 		pkScript, err := txscript.PayToAddrScript(addr)
 		if err != nil {
@@ -151,15 +147,9 @@ func (s *Server) PsbtAddRecipient(ctx context.Context,
 		}
 		txOut := wire.NewTxOut(req.Recipient.Value, pkScript)
 		kernel.PegOuts = append(kernel.PegOuts, txOut)
-
-		fee = ltcutil.Amount(len(pkScript)+mweb.BytesPerWeight-1) /
-			mweb.BytesPerWeight * mweb.BaseMwebFee
-		fee += ltcutil.Amount(math.Ceil(float64(req.FeeRatePerKb) *
-			float64(txOut.SerializeSize()) / 1000))
 	}
-	*kernel.Fee += fee
 
-	s.addPeginIfNecessary(p)
+	s.adjustKernel(p, req.FeeRatePerKb)
 
 	b64, err := p.B64Encode()
 	if err != nil {
@@ -168,51 +158,65 @@ func (s *Server) PsbtAddRecipient(ctx context.Context,
 	return &proto.PsbtResponse{PsbtB64: b64}, nil
 }
 
-func (s *Server) addPeginIfNecessary(p *psbt.Packet) {
-	var offset ltcutil.Amount
+func (s *Server) calcFee(p *psbt.Packet, feeRatePerKb uint64) uint64 {
+	divCeil := func(x, y uint64) uint64 { return (x + y - 1) / y }
+	var weight, txOutSize uint64
+	for _, pOutput := range p.Outputs {
+		if pOutput.StealthAddress != nil || pOutput.OutputCommit != nil {
+			weight += mweb.StandardOutputWeight
+		}
+	}
+	for _, pKernel := range p.Kernels {
+		weight += mweb.KernelWithStealthWeight
+		for _, pegout := range pKernel.PegOuts {
+			weight += divCeil(uint64(len(pegout.PkScript)), mweb.BytesPerWeight)
+			txOutSize += uint64(pegout.SerializeSize())
+		}
+	}
+	return weight*mweb.BaseMwebFee + divCeil(txOutSize*feeRatePerKb, 1000)
+}
 
+func (s *Server) adjustKernel(p *psbt.Packet, feeRatePerKb uint64) {
+	var (
+		inputs, outputs ltcutil.Amount
+
+		kernel = &p.Kernels[s.getKernelIndex(p)]
+		fee    = ltcutil.Amount(s.calcFee(p, feeRatePerKb))
+	)
 	for _, pInput := range p.Inputs {
 		if pInput.MwebAmount != nil {
-			offset -= *pInput.MwebAmount
+			inputs += *pInput.MwebAmount
 		}
 	}
 	for _, pOutput := range p.Outputs {
 		if pOutput.StealthAddress != nil || pOutput.OutputCommit != nil {
-			offset += pOutput.Amount
+			outputs += pOutput.Amount
 		}
 	}
-
-	for _, pKernel := range p.Kernels {
-		if pKernel.Fee != nil {
-			offset += *pKernel.Fee
-		}
-		if pKernel.PeginAmount != nil {
-			offset -= *pKernel.PeginAmount
+	for i, pKernel := range p.Kernels {
+		if pKernel.Signature != nil {
+			if pKernel.Fee != nil {
+				outputs += *pKernel.Fee
+				fee = max(fee-*pKernel.Fee, 0)
+			}
+			if pKernel.PeginAmount != nil {
+				inputs += *pKernel.PeginAmount
+			}
+		} else {
+			p.Kernels[i].Fee = nil
+			p.Kernels[i].PeginAmount = nil
 		}
 		for _, pegout := range pKernel.PegOuts {
-			offset += ltcutil.Amount(pegout.Value)
+			outputs += ltcutil.Amount(pegout.Value)
 		}
 	}
-
-	kernel := &p.Kernels[s.getKernelIndex(p)]
-	if offset > 0 {
-		if kernel.PeginAmount == nil {
-			kernel.PeginAmount = new(ltcutil.Amount)
-		}
-		*kernel.PeginAmount += offset
+	if inputs < outputs+fee {
+		pegin := outputs + fee - inputs
+		kernel.PeginAmount = &pegin
 	} else {
-		for i, pKernel := range p.Kernels {
-			if pKernel.Signature == nil && pKernel.PeginAmount != nil {
-				if *pKernel.PeginAmount <= -offset {
-					offset += *pKernel.PeginAmount
-					p.Kernels[i].PeginAmount = nil
-				} else {
-					*pKernel.PeginAmount += offset
-					break
-				}
-			}
-		}
+		fee = inputs - outputs
 	}
+	kernel.Fee = &fee
 }
 
 func (s *Server) PsbtGetRecipients(ctx context.Context,

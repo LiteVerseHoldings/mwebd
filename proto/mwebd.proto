@@ -215,6 +215,9 @@ message PsbtAddInputRequest {
 
     // The address index of the utxo.
     uint32 address_index = 4;
+
+    // The fee rate per KB in litoshis.
+    uint64 fee_rate_per_kb = 5;
 }
 
 message PsbtAddRecipientRequest {

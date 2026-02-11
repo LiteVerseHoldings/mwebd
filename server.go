@@ -39,6 +39,7 @@ type Server struct {
 	proto.UnimplementedRpcServer
 	db        walletdb.DB
 	cs        *neutrino.ChainService
+	cp        chaincfg.Params
 	mtx       sync.Mutex
 	server    *grpc.Server
 	utxoChan  map[mw.SecretKey]map[*utxoStreamer]struct{}
@@ -48,6 +49,10 @@ type Server struct {
 
 type ServerArgs struct {
 	Chain, DataDir, PeerAddr, ProxyAddr string
+}
+
+func NewBareServer(chainParams chaincfg.Params) *Server {
+	return &Server{cp: chainParams}
 }
 
 func NewServer(chain, dataDir, peer string) (*Server, error) {
@@ -113,6 +118,7 @@ func NewServer2(args *ServerArgs) (s *Server, err error) {
 	if err != nil {
 		return
 	}
+	s.cp = s.cs.ChainParams()
 
 	s.cs.RegisterMwebUtxosCallback(s.utxoHandler)
 	return s, s.cs.Start()
@@ -239,8 +245,7 @@ func (s *Server) filterUtxos(scanSecret *mw.SecretKey,
 		if err != nil {
 			continue
 		}
-		chainParams := s.cs.ChainParams()
-		addr := ltcutil.NewAddressMweb(coin.Address, &chainParams)
+		addr := ltcutil.NewAddressMweb(coin.Address, &s.cp)
 		bh, err := s.cs.BlockHeaders.FetchHeaderByHeight(uint32(utxo.Height))
 		if err != nil {
 			bh = &wire.BlockHeader{Timestamp: time.Unix(0, 0)}
@@ -328,8 +333,7 @@ func (s *Server) Addresses(ctx context.Context,
 	}
 	resp := &proto.AddressResponse{}
 	for i := req.FromIndex; i < req.ToIndex; i++ {
-		chainParams := s.cs.ChainParams()
-		addr := ltcutil.NewAddressMweb(keychain.Address(i), &chainParams)
+		addr := ltcutil.NewAddressMweb(keychain.Address(i), &s.cp)
 		resp.Address = append(resp.Address, addr.String())
 	}
 	return resp, nil
@@ -471,9 +475,7 @@ func (s *Server) Create(ctx context.Context,
 			continue
 		}
 
-		chainParams := s.cs.ChainParams()
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
-			txOut.PkScript, &chainParams)
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, &s.cp)
 		if err != nil {
 			return nil, err
 		}

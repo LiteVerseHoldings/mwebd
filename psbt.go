@@ -128,8 +128,7 @@ func (s *Server) PsbtAddRecipient(ctx context.Context,
 		return nil, err
 	}
 
-	chainParams := s.cs.ChainParams()
-	addr, err := ltcutil.DecodeAddress(req.Recipient.Address, &chainParams)
+	addr, err := ltcutil.DecodeAddress(req.Recipient.Address, &s.cp)
 	if err != nil {
 		return nil, err
 	}
@@ -227,11 +226,10 @@ func (s *Server) PsbtGetRecipients(ctx context.Context,
 		return nil, err
 	}
 
-	chainParams := s.cs.ChainParams()
 	resp := &proto.PsbtGetRecipientsResponse{}
 
 	pkScriptToAddr := func(pkScript []byte) (string, error) {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(pkScript, &chainParams)
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(pkScript, &s.cp)
 		if err != nil {
 			return "", err
 		}
@@ -258,10 +256,9 @@ func (s *Server) PsbtGetRecipients(ctx context.Context,
 		var addr string
 		switch {
 		case pOutput.StealthAddress != nil:
-			addr = ltcutil.NewAddressMweb(
-				pOutput.StealthAddress, &chainParams).String()
+			addr = ltcutil.NewAddressMweb(pOutput.StealthAddress, &s.cp).String()
 		case pOutput.OutputCommit != nil:
-			addr = chainParams.Bech32HRPMweb + "1"
+			addr = s.cp.Bech32HRPMweb + "1"
 		default:
 			if addr, err = pkScriptToAddr(pOutput.PKScript); err != nil {
 				return nil, err

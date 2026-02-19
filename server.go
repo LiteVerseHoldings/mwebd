@@ -26,6 +26,7 @@ import (
 	"github.com/ltcmweb/ltcd/wire"
 	"github.com/ltcmweb/mwebd/ledger"
 	"github.com/ltcmweb/mwebd/proto"
+	"github.com/ltcmweb/mwebd/sign"
 	"github.com/ltcmweb/neutrino"
 	"github.com/ltcmweb/neutrino/mwebdb"
 	"github.com/ltcsuite/ltcwallet/walletdb"
@@ -327,32 +328,23 @@ func (s *Server) Utxos(req *proto.UtxosRequest,
 func (s *Server) Addresses(ctx context.Context,
 	req *proto.AddressRequest) (*proto.AddressResponse, error) {
 
-	keychain := &mweb.Keychain{
-		Scan:        (*mw.SecretKey)(req.ScanSecret),
-		SpendPubKey: (*mw.PublicKey)(req.SpendPubkey),
-	}
-	resp := &proto.AddressResponse{}
-	for i := req.FromIndex; i < req.ToIndex; i++ {
-		addr := ltcutil.NewAddressMweb(keychain.Address(i), &s.cp)
-		resp.Address = append(resp.Address, addr.String())
-	}
-	return resp, nil
+	resp := sign.Addresses(&sign.AddressesRequest{
+		Scan:     req.ScanSecret,
+		SpendPub: req.SpendPubkey,
+		From:     req.FromIndex,
+		To:       req.ToIndex,
+	}, &s.cp)
+	return &proto.AddressResponse{Address: resp.Address}, nil
 }
 
 func Addresses(scanSecret, spendPubKey []byte, i, j int32) string {
-	keychain := &mweb.Keychain{
-		Scan:        (*mw.SecretKey)(scanSecret),
-		SpendPubKey: (*mw.PublicKey)(spendPubKey),
-	}
-	var sb strings.Builder
-	for ; i < j; i++ {
-		if sb.Len() > 0 {
-			sb.WriteByte(',')
-		}
-		sb.WriteString(ltcutil.NewAddressMweb(keychain.Address(uint32(i)),
-			&chaincfg.MainNetParams).String())
-	}
-	return sb.String()
+	resp := sign.Addresses(&sign.AddressesRequest{
+		Scan:     scanSecret,
+		SpendPub: spendPubKey,
+		From:     uint32(i),
+		To:       uint32(j),
+	}, &chaincfg.MainNetParams)
+	return strings.Join(resp.Address, ",")
 }
 
 func (s *Server) Spent(ctx context.Context,

@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"errors"
 	"strings"
 
-	"github.com/ltcmweb/ltcd/btcec/v2"
 	"github.com/ltcmweb/ltcd/chaincfg/chainhash"
 	"github.com/ltcmweb/ltcd/ltcutil"
 	"github.com/ltcmweb/ltcd/ltcutil/mweb"
@@ -16,6 +14,7 @@ import (
 	"github.com/ltcmweb/ltcd/txscript"
 	"github.com/ltcmweb/ltcd/wire"
 	"github.com/ltcmweb/mwebd/proto"
+	"github.com/ltcmweb/mwebd/sign"
 )
 
 func (s *Server) PsbtCreate(ctx context.Context,
@@ -221,182 +220,50 @@ func (s *Server) adjustKernel(p *psbt.Packet, feeRatePerKb uint64) {
 func (s *Server) PsbtGetRecipients(ctx context.Context,
 	req *proto.PsbtGetRecipientsRequest) (*proto.PsbtGetRecipientsResponse, error) {
 
-	p, err := psbt.NewFromRawBytes(strings.NewReader(req.PsbtB64), true)
+	resp, err := sign.PsbtGetRecipients(&sign.Psbt{PsbtB64: req.PsbtB64}, &s.cp)
 	if err != nil {
 		return nil, err
 	}
-
-	resp := &proto.PsbtGetRecipientsResponse{}
-
-	pkScriptToAddr := func(pkScript []byte) (string, error) {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(pkScript, &s.cp)
-		if err != nil {
-			return "", err
-		}
-		var addrs2 []string
-		for _, addr := range addrs {
-			addrs2 = append(addrs2, addr.String())
-		}
-		return strings.Join(addrs2, ","), nil
-	}
-
-	for _, pInput := range p.Inputs {
-		var addr string
-		switch {
-		case pInput.WitnessUtxo != nil:
-			addr, _ = pkScriptToAddr(pInput.WitnessUtxo.PkScript)
-			resp.Fee += pInput.WitnessUtxo.Value
-		case pInput.MwebOutputId != nil:
-			addr = hex.EncodeToString(pInput.MwebOutputId[:])
-		}
-		resp.InputAddress = append(resp.InputAddress, addr)
-	}
-
-	for _, pOutput := range p.Outputs {
-		var addr string
-		switch {
-		case pOutput.StealthAddress != nil:
-			addr = ltcutil.NewAddressMweb(pOutput.StealthAddress, &s.cp).String()
-		case pOutput.OutputCommit != nil:
-			addr = s.cp.Bech32HRPMweb + "1"
-		default:
-			if addr, err = pkScriptToAddr(pOutput.PKScript); err != nil {
-				return nil, err
-			}
-			resp.Fee -= int64(pOutput.Amount)
-		}
-		resp.Recipient = append(resp.Recipient, &proto.PsbtRecipient{
-			Address: addr,
-			Value:   int64(pOutput.Amount),
+	var rs []*proto.PsbtRecipient
+	for _, r := range resp.Recipient {
+		rs = append(rs, &proto.PsbtRecipient{
+			Address: r.Address,
+			Value:   r.Value,
 		})
 	}
-
-	for _, pKernel := range p.Kernels {
-		for _, pegout := range pKernel.PegOuts {
-			addr, err := pkScriptToAddr(pegout.PkScript)
-			if err != nil {
-				return nil, err
-			}
-			resp.Recipient = append(resp.Recipient, &proto.PsbtRecipient{
-				Address: addr,
-				Value:   pegout.Value,
-			})
-		}
-		if pKernel.Fee != nil {
-			resp.Fee += int64(*pKernel.Fee)
-		}
-		if pKernel.PeginAmount != nil {
-			resp.Fee -= int64(*pKernel.PeginAmount)
-		}
-	}
-
-	return resp, nil
+	return &proto.PsbtGetRecipientsResponse{
+		Recipient:    rs,
+		InputAddress: resp.InputAddress,
+		Fee:          resp.Fee,
+	}, nil
 }
 
 func (s *Server) PsbtSign(ctx context.Context,
 	req *proto.PsbtSignRequest) (*proto.PsbtResponse, error) {
 
-	p, err := psbt.NewFromRawBytes(strings.NewReader(req.PsbtB64), true)
+	resp, err := sign.PsbtSign(&sign.PsbtSignRequest{
+		PsbtB64: req.PsbtB64,
+		Scan:    req.ScanSecret,
+		Spend:   req.SpendSecret,
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	keychain := &mweb.Keychain{
-		Scan:  (*mw.SecretKey)(req.ScanSecret),
-		Spend: (*mw.SecretKey)(req.SpendSecret),
-	}
-
-	addrIndex := map[mw.PublicKey]uint32{}
-	for _, pInput := range p.Inputs {
-		if pInput.MwebOutputPubkey != nil && pInput.MwebAddressIndex != nil {
-			addrIndex[*pInput.MwebOutputPubkey] = *pInput.MwebAddressIndex
-		}
-	}
-
-	inputSigner := psbt.BasicMwebInputSigner{DeriveOutputKeys: func(
-		Ko, Ke *mw.PublicKey, t *mw.SecretKey) (
-		*mw.BlindingFactor, *mw.SecretKey, error) {
-
-		if t == nil {
-			sA := Ke.Mul(keychain.Scan)
-			t = (*mw.SecretKey)(mw.Hashed(mw.HashTagDerive, sA[:]))
-		}
-
-		htOutKey := (*mw.SecretKey)(mw.Hashed(mw.HashTagOutKey, t[:]))
-		B_i := Ko.Div(htOutKey)
-		addr := &mw.StealthAddress{Scan: B_i.Mul(keychain.Scan), Spend: B_i}
-		if !addr.Equal(keychain.Address(addrIndex[*Ko])) {
-			return nil, nil, errors.New("address mismatch")
-		}
-
-		return (*mw.BlindingFactor)(mw.Hashed(mw.HashTagBlind, t[:])),
-			keychain.SpendKey(addrIndex[*Ko]).Mul(htOutKey), nil
-	}}
-
-	signer, err := psbt.NewSigner(p, inputSigner)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err = signer.SignMwebComponents(); err != nil {
-		return nil, err
-	}
-
-	b64, err := p.B64Encode()
-	if err != nil {
-		return nil, err
-	}
-	return &proto.PsbtResponse{PsbtB64: b64}, nil
+	return &proto.PsbtResponse{PsbtB64: resp.PsbtB64}, nil
 }
 
 func (s *Server) PsbtSignNonMweb(ctx context.Context,
 	req *proto.PsbtSignNonMwebRequest) (*proto.PsbtResponse, error) {
 
-	p, err := psbt.NewFromRawBytes(strings.NewReader(req.PsbtB64), true)
+	resp, err := sign.PsbtSignPubKeyHash(&sign.PsbtSignPubKeyHashRequest{
+		PsbtB64: req.PsbtB64,
+		PrivKey: req.PrivKey,
+		Index:   req.Index,
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	tx, err := psbt.ExtractUnsignedTx(p)
-	if err != nil {
-		return nil, err
-	}
-
-	txInIdx := 0
-	fetcher := txscript.NewMultiPrevOutFetcher(nil)
-	for i, pInput := range p.Inputs {
-		if pInput.MwebOutputId == nil {
-			op := wire.NewOutPoint(pInput.PrevoutHash, *pInput.PrevoutIndex)
-			fetcher.AddPrevOut(*op, pInput.WitnessUtxo)
-			if i < int(req.Index) {
-				txInIdx++
-			}
-		}
-	}
-
-	txOut := p.Inputs[req.Index].WitnessUtxo
-	key, pub := btcec.PrivKeyFromBytes(req.PrivKey)
-	sig, err := txscript.RawTxInWitnessSignature(tx,
-		txscript.NewTxSigHashes(tx, fetcher), txInIdx,
-		txOut.Value, txOut.PkScript, txscript.SigHashAll, key)
-	if err != nil {
-		return nil, err
-	}
-
-	u := psbt.Updater{Upsbt: p}
-	_, err = u.Sign(int(req.Index), sig, pub.SerializeCompressed(), nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	if err = psbt.Finalize(p, int(req.Index)); err != nil {
-		return nil, err
-	}
-
-	b64, err := p.B64Encode()
-	if err != nil {
-		return nil, err
-	}
-	return &proto.PsbtResponse{PsbtB64: b64}, nil
+	return &proto.PsbtResponse{PsbtB64: resp.PsbtB64}, nil
 }
 
 func (s *Server) PsbtExtract(ctx context.Context,

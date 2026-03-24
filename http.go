@@ -5,14 +5,11 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"net"
 	"net/http"
-	"slices"
 	"strconv"
 	"time"
 
-	"github.com/ltcmweb/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcmweb/ltcd/wire"
 	"github.com/ltcmweb/mwebd/proto"
 )
@@ -48,16 +45,6 @@ type PublicStatusResponse struct {
 	UtxosHeight int32  `json:"utxosHeight"`
 }
 
-type AccountUtxosRequest struct {
-	ScanSecret string `json:"scanSecret"`
-	FromHeight int32  `json:"fromHeight"`
-}
-
-type AccountUtxosResponse struct {
-	Utxos        []*proto.Utxo `json:"utxos"`
-	SyncedHeight int32         `json:"syncedHeight"`
-}
-
 func (s *Server) StartHTTPAddr(addr string) error {
 	if addr == "" {
 		return nil
@@ -67,7 +54,6 @@ func (s *Server) StartHTTPAddr(addr string) error {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/outputs", s.handleOutputs)
 	mux.HandleFunc("/spent", s.handleSpent)
-	mux.HandleFunc("/account/utxos", s.handleAccountUtxos)
 
 	server := &http.Server{
 		Addr:              addr,
@@ -172,46 +158,6 @@ func (s *Server) handleSpent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-func (s *Server) handleAccountUtxos(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	var req AccountUtxosRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSONError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	scanSecret, err := hex.DecodeString(req.ScanSecret)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if len(scanSecret) != 32 {
-		writeJSONError(w, "scanSecret must be 32 bytes", http.StatusBadRequest)
-		return
-	}
-
-	utxos, syncedHeight, err := s.ListAccountUtxos(scanSecret, req.FromHeight)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, AccountUtxosResponse{
-		Utxos:        utxos,
-		SyncedHeight: syncedHeight,
-	})
-}
-
 func (s *Server) ListPublicOutputs(cursor uint64, limit int) (*PublicOutputsResponse, error) {
 	if limit <= 0 {
 		limit = defaultOutputPageLimit
@@ -272,50 +218,6 @@ func (s *Server) ListPublicOutputs(cursor uint64, limit int) (*PublicOutputsResp
 		HasMore:    nextCursor < lfs.Size,
 		TipHeight:  status.BlockHeaderHeight,
 	}, nil
-}
-
-func (s *Server) ListAccountUtxos(scanSecretBytes []byte, fromHeight int32) ([]*proto.Utxo, int32, error) {
-	scanSecret := (*mw.SecretKey)(scanSecretBytes)
-
-	heightMap, err := s.cs.MwebCoinDB.GetLeavesAtHeight()
-	if err != nil {
-		return nil, 0, err
-	}
-
-	var heights []uint32
-	for height := range heightMap {
-		heights = append(heights, height)
-	}
-	slices.Sort(heights)
-	index, _ := slices.BinarySearch(heights, uint32(fromHeight))
-	leaf := uint64(0)
-	if index > 0 {
-		leaf = heightMap[heights[index-1]]
-	}
-
-	lfs, err := s.cs.MwebCoinDB.GetLeafset()
-	if err != nil {
-		return nil, 0, err
-	}
-
-	var result []*proto.Utxo
-	for leaves := []uint64{}; leaf < lfs.Size; leaf++ {
-		if lfs.Contains(leaf) {
-			leaves = append(leaves, leaf)
-		}
-		if len(leaves) == 1000 || leaf == lfs.Size-1 {
-			if len(leaves) > 0 {
-				utxos, err := s.cs.MwebCoinDB.FetchLeaves(leaves)
-				if err != nil {
-					return nil, 0, err
-				}
-				result = append(result, s.filterUtxos(scanSecret, utxos)...)
-				leaves = leaves[:0]
-			}
-		}
-	}
-
-	return result, int32(lfs.Height), nil
 }
 
 func (s *Server) publicOutputFromUtxo(leaf uint64, utxo *wire.MwebNetUtxo) (PublicOutput, error) {

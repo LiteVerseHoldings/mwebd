@@ -14,6 +14,7 @@ var (
 	dataDir  = flag.String("d", ".", "Data directory")
 	peer     = flag.String("p", "", "Connect to peer")
 	bindAddr = flag.String("l", "127.0.0.1:12345", "Bind address")
+	httpAddr = flag.String("http", "", "Optional HTTP API bind address")
 	proxy    = flag.String("proxy", "", `Proxy address (e.g. "socks5://127.0.0.1:9050")`)
 )
 
@@ -29,6 +30,9 @@ func main() {
 	}
 
 	go waitForParent(server)
+	if err = server.StartHTTPAddr(*httpAddr); err != nil {
+		log.Fatalln("Failed to start HTTP API:", err)
+	}
 	if _, err = server.StartAddr(*bindAddr); err != nil {
 		log.Fatalln("Failed to listen:", err)
 	}

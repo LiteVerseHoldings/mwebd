@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -38,14 +39,15 @@ import (
 
 type Server struct {
 	proto.UnimplementedRpcServer
-	db        walletdb.DB
-	cs        *neutrino.ChainService
-	cp        chaincfg.Params
-	mtx       sync.Mutex
-	server    *grpc.Server
-	utxoChan  map[mw.SecretKey]map[*utxoStreamer]struct{}
-	coinCache *lru.Cache[mw.SecretKey, *lru.Cache[chainhash.Hash, *mweb.Coin]]
-	ledgerTx  *ledger.TxContext
+	db         walletdb.DB
+	cs         *neutrino.ChainService
+	cp         chaincfg.Params
+	mtx        sync.Mutex
+	server     *grpc.Server
+	utxoChan   map[mw.SecretKey]map[*utxoStreamer]struct{}
+	coinCache  *lru.Cache[mw.SecretKey, *lru.Cache[chainhash.Hash, *mweb.Coin]]
+	ledgerTx   *ledger.TxContext
+	httpServer *http.Server
 }
 
 type ServerArgs struct {
@@ -162,6 +164,9 @@ func (s *Server) serve(lis net.Listener) error {
 }
 
 func (s *Server) Stop() {
+	if s.httpServer != nil {
+		_ = s.httpServer.Shutdown(context.Background())
+	}
 	s.server.Stop()
 }
 

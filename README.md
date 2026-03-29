@@ -73,3 +73,14 @@ newly-confirmed UTXOs belonging to that account.
 created by the wallet have confirmed.
 - `Create` and `Broadcast` are obviously for creating and broadcasting MWEB
 transactions. In general existing broadcast mechanisms don't support MWEB.
+
+### HTTP API
+
+`mwebd` also exposes a small read-only HTTP bridge for public MWEB sync data.
+
+- Litescribe bridge base URL: `https://api.litescribe.io/mweb`
+- documented endpoints: [HTTP_API.md](./HTTP_API.md)
+
+The HTTP bridge is intended for public status/output/spent queries only. It is
+not a replacement for the authenticated RPC/FFI surface used for wallet
+operations that involve private account material.
